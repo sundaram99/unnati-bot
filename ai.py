@@ -7,6 +7,7 @@ import os
 import json
 import logging
 import anthropic
+from groq import Groq
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -239,17 +240,17 @@ def answer_pipeline_question(question: str, contacts: list, notes: list) -> str:
     pipeline_context = "PIPELINE DATA:\n" + "\n".join(contact_lines)
     user_prompt = f"{pipeline_context}\n\nQUESTION: {question}"
 
-    client = get_anthropic_client()
+    client = Groq(api_key=os.environ["GROQ_API_KEY"])
     try:
-        response = client.messages.create(
-            model=MODEL,
+        response = client.chat.completions.create(
+            model="llama3-8b-8192",
             max_tokens=400,
-            system=PIPELINE_QA_SYSTEM_PROMPT,
             messages=[
-                {"role": "user", "content": user_prompt},
+                {"role": "system", "content": PIPELINE_QA_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_prompt},
             ],
         )
-        return response.content[0].text.strip()
+        return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error("Pipeline Q&A failed: %s", e, exc_info=True)
         print(f"[DEBUG] Pipeline Q&A error ({type(e).__name__}): {e}")
