@@ -263,7 +263,7 @@ def answer_pipeline_question(question: str, contacts: list, notes: list) -> str:
 MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB — Whisper API hard limit
 
 
-def transcribe_voice(audio_bytes: bytes, duration_sec: int, mime_type: str = "audio/ogg") -> str:
+async def transcribe_voice(audio_bytes: bytes, duration_sec: int, mime_type: str = "audio/ogg") -> str:
     """
     Transcribe audio bytes using Groq Whisper API.
 
