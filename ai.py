@@ -251,8 +251,9 @@ def answer_pipeline_question(question: str, contacts: list, notes: list) -> str:
         )
         return response.content[0].text.strip()
     except Exception as e:
-        logger.error("Pipeline Q&A failed: %s", e)
+        logger.error("Pipeline Q&A failed: %s", e, exc_info=True)
         print(f"[DEBUG] Pipeline Q&A error ({type(e).__name__}): {e}")
+        import traceback; traceback.print_exc()
         return "Sorry, I couldn't process that question right now. Try again in a moment."
 
 
