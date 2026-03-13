@@ -243,7 +243,7 @@ def answer_pipeline_question(question: str, contacts: list, notes: list) -> str:
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
     try:
         response = client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             max_tokens=400,
             messages=[
                 {"role": "system", "content": PIPELINE_QA_SYSTEM_PROMPT},
