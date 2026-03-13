@@ -162,34 +162,32 @@ async def addcontact_company(update: Update, context: ContextTypes.DEFAULT_TYPE)
     company = update.message.text.strip()
     context.user_data["new_contact"]["company"] = company
 
+    keyboard = [
+        [InlineKeyboardButton(s, callback_data=f"stage:{s}") for s in row]
+        for row in STAGE_OPTIONS
+    ]
     await update.message.reply_text(
         f"🏢 *{company}*\n\nStep 3/4 — What's the current *deal stage*?",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=ReplyKeyboardMarkup(
-            STAGE_OPTIONS, one_time_keyboard=True, resize_keyboard=True
-        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return AC_STAGE
 
 
 async def addcontact_stage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Validate stage, ask for lead source."""
-    stage = update.message.text.strip()
-    valid_stages = [s for row in STAGE_OPTIONS for s in row]
-
-    if stage not in valid_stages:
-        await update.message.reply_text(
-            "Please choose a stage from the keyboard.",
-            reply_markup=ReplyKeyboardMarkup(
-                STAGE_OPTIONS, one_time_keyboard=True, resize_keyboard=True
-            ),
-        )
-        return AC_STAGE
+    """Store stage (from inline button), ask for lead source."""
+    query = update.callback_query
+    await query.answer()
+    stage = query.data.split(":", 1)[1]
 
     context.user_data["new_contact"]["stage"] = stage
-    await update.message.reply_text(
-        f"📊 Stage: *{stage}*\n\nStep 4/4 — How did you find this lead? (e.g. referral, LinkedIn, cold outreach, event)",
+    company = context.user_data["new_contact"].get("company", "")
+    await query.edit_message_text(
+        f"🏢 *{company}*\n\n📊 Stage: *{stage}* ✓",
         parse_mode=ParseMode.MARKDOWN,
+    )
+    await query.message.reply_text(
+        "Step 4/4 — How did you find this lead? (e.g. referral, LinkedIn, cold outreach, event)",
         reply_markup=ReplyKeyboardMarkup(
             [["Referral", "LinkedIn"], ["Cold outreach", "Event"], ["Other"]],
             one_time_keyboard=True,
@@ -242,7 +240,7 @@ def build_addcontact_handler() -> ConversationHandler:
         states={
             AC_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, addcontact_name)],
             AC_COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, addcontact_company)],
-            AC_STAGE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, addcontact_stage)],
+            AC_STAGE:   [CallbackQueryHandler(addcontact_stage, pattern="^stage:")],
             AC_SOURCE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, addcontact_source)],
         },
         fallbacks=[CommandHandler("cancel", addcontact_cancel)],
