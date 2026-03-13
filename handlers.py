@@ -718,6 +718,42 @@ async def nudge_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await sched.send_nudges_for_user(context.bot, user)
 
 
+# ── /ask ─────────────────────────────────────────────────────────────────────
+
+async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /ask [question] — Answer a natural language question about the pipeline.
+    Fetches live data from Supabase and sends it to Groq for analysis.
+    """
+    uid = await _ensure_user(update, context)
+    if not uid:
+        return
+
+    question = " ".join(context.args or []).strip()
+    if not question:
+        await update.message.reply_text(
+            "Usage: /ask [your question]\n\n"
+            "Examples:\n"
+            "• /ask who are my hottest leads?\n"
+            "• /ask which deals haven't been touched in 2 weeks?\n"
+            "• /ask what should I focus on today?"
+        )
+        return
+
+    thinking = await update.message.reply_text("🤔 Analysing your pipeline…")
+
+    sb       = _sb()
+    contacts = db.get_active_contacts(sb, uid)
+    notes    = db.get_recent_notes_for_user(sb, uid, limit=40)
+
+    answer = ai.answer_pipeline_question(question, contacts, notes)
+
+    await thinking.edit_text(
+        f"💬 *{question}*\n\n{answer}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 # ── Unknown command fallback ──────────────────────────────────────────────────
 
 async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

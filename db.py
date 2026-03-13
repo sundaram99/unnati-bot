@@ -223,6 +223,19 @@ def get_notes_for_contact(sb: httpx.Client, contact_id: str, limit: int = 5) -> 
     return _data(r)
 
 
+def get_recent_notes_for_user(sb: httpx.Client, user_id: str, limit: int = 40) -> list:
+    """Return the most recent notes across all of a user's contacts."""
+    r = sb.get(
+        "notes",
+        params={
+            "user_id": f"eq.{user_id}",
+            "order": "logged_on.desc",
+            "limit": str(limit),
+        },
+    )
+    return _data(r)
+
+
 # ── Heat score ───────────────────────────────────────────────────────────────
 
 def heat_score(contact: dict) -> int:

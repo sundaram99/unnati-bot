@@ -169,6 +169,95 @@ def generate_pre_call_brief(contact: dict, notes: list[dict]) -> str:
         )
 
 
+# ── Pipeline Q&A ─────────────────────────────────────────────────────────────
+
+PIPELINE_QA_SYSTEM_PROMPT = """
+You are Unnati CRM's AI assistant for an Indian B2B founder.
+You have been given the founder's live pipeline data — all their active contacts
+with deal stage, heat score, days since last update, interaction count, and
+recent notes.
+
+Answer the founder's question conversationally but concisely.
+Use the data provided; do not make up contacts or facts not in the data.
+Format lists as bullet points. Keep your answer under 200 words.
+If the data doesn't support a clear answer, say so honestly.
+"""
+
+
+def answer_pipeline_question(question: str, contacts: list, notes: list) -> str:
+    """
+    Answer a natural language question about the user's pipeline.
+
+    Args:
+        question:  The founder's free-text question.
+        contacts:  List of active contact dicts from db.get_active_contacts().
+        notes:     List of recent note dicts from db.get_recent_notes_for_user().
+
+    Returns:
+        Plain-text answer string, or an error message.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+
+    # Build a compact notes index: contact_id → [note_text, ...]
+    notes_by_contact: dict[str, list[str]] = {}
+    for n in notes:
+        cid = n.get("contact_id", "")
+        notes_by_contact.setdefault(cid, []).append(
+            f"[{str(n.get('logged_on',''))[:10]}] {n.get('note_text','')}"
+        )
+
+    # Serialize each contact into a readable block
+    contact_lines: list[str] = []
+    for c in contacts:
+        lu_str = c.get("last_updated") or c.get("added_on", "")
+        try:
+            lu = datetime.fromisoformat(lu_str.replace("Z", "+00:00"))
+            if lu.tzinfo is None:
+                lu = lu.replace(tzinfo=timezone.utc)
+            days_ago = (now - lu).days
+        except Exception:
+            days_ago = "?"
+
+        # Import here to avoid circular; db is always available at runtime
+        import db as _db
+        score = _db.heat_score(c)
+        badge = _db.heat_emoji(score)
+
+        recent_notes = notes_by_contact.get(c.get("id", ""), [])
+        notes_str = "; ".join(recent_notes[:3]) if recent_notes else "no notes"
+
+        contact_lines.append(
+            f"- {c['name']} ({c['company']}) | Stage: {c['stage']} | "
+            f"{badge} score={score} | last touched {days_ago}d ago | "
+            f"interactions: {c.get('interaction_count', 0)} | notes: {notes_str}"
+        )
+
+    if not contact_lines:
+        return "Your pipeline is empty — add contacts with /addcontact first."
+
+    pipeline_context = "PIPELINE DATA:\n" + "\n".join(contact_lines)
+    user_prompt = f"{pipeline_context}\n\nQUESTION: {question}"
+
+    client = get_groq_client()
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": PIPELINE_QA_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=400,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("Pipeline Q&A failed: %s", e)
+        print(f"[DEBUG] Pipeline Q&A error ({type(e).__name__}): {e}")
+        return "Sorry, I couldn't process that question right now. Try again in a moment."
+
+
 # ── Whisper transcription ─────────────────────────────────────────────────────
 
 WHISPER_COST_PER_MINUTE = 0.006  # USD, as of 2024

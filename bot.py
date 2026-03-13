@@ -89,6 +89,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("lost",    handlers.lost))
     app.add_handler(CommandHandler("digest",  handlers.digest_cmd))
     app.add_handler(CommandHandler("nudge",   handlers.nudge_cmd))
+    app.add_handler(CommandHandler("ask",     handlers.ask_cmd))
 
     # ── Message handlers ──
     # Forwarded text/photo messages (has forward_origin attribute in PTB v21)
