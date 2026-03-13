@@ -6,9 +6,9 @@ import io
 import os
 import json
 import logging
+import tempfile
 import anthropic
 from groq import Groq
-from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -260,68 +260,55 @@ def answer_pipeline_question(question: str, contacts: list, notes: list) -> str:
 
 # ── Whisper transcription ─────────────────────────────────────────────────────
 
-WHISPER_COST_PER_MINUTE = 0.006  # USD, as of 2024
-
 MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB — Whisper API hard limit
 
 
-async def transcribe_voice(audio_bytes: bytes, duration_sec: int, mime_type: str = "audio/ogg") -> str:
+def transcribe_voice(audio_bytes: bytes, duration_sec: int, mime_type: str = "audio/ogg") -> str:
     """
-    Transcribe audio bytes using OpenAI Whisper API.
+    Transcribe audio bytes using Groq Whisper API.
 
     Args:
         audio_bytes:  Raw audio data.
-        duration_sec: Clip duration in seconds (for cost logging).
-        mime_type:    MIME type hint — determines filename extension sent to Whisper.
+        duration_sec: Clip duration in seconds (for logging).
+        mime_type:    MIME type hint (unused; file written as .ogg).
 
     Returns:
         Transcribed text string.
 
     Raises:
-        ValueError:  If audio exceeds 25 MB or transcription is empty.
+        ValueError:   If audio exceeds 25 MB or transcription is empty.
         RuntimeError: On API errors.
     """
     if len(audio_bytes) > MAX_AUDIO_BYTES:
         raise ValueError("audio_too_large")
 
-    # Map MIME type → file extension Whisper recognises
-    ext_map = {
-        "audio/ogg":  "ogg",
-        "audio/mpeg": "mp3",
-        "audio/mp4":  "mp4",
-        "audio/m4a":  "m4a",
-        "audio/wav":  "wav",
-        "audio/webm": "webm",
-    }
-    ext = ext_map.get(mime_type, "ogg")
+    print(f"[WHISPER] Sending {len(audio_bytes) / 1024:.1f} KB ({duration_sec}s) to Groq Whisper.")
 
-    # Build a file-like object with a name so the SDK detects the format
-    buf = io.BytesIO(audio_bytes)
-    buf.name = f"audio.{ext}"
-
-    # Log estimated cost before the API call
-    cost_usd = (duration_sec / 60) * WHISPER_COST_PER_MINUTE
-    print(
-        f"[WHISPER] Sending {len(audio_bytes) / 1024:.1f} KB "
-        f"({duration_sec}s) to Whisper. "
-        f"Est. cost: ${cost_usd:.4f}"
-    )
-
-    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
     try:
-        result = await client.audio.transcriptions.create(
-            model="whisper-1",
-            file=buf,
-            language="en",        # speeds up inference; Whisper auto-detects if omitted
-            response_format="text",
-        )
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        with open(tmp_path, "rb") as f:
+            result = client.audio.transcriptions.create(
+                model="whisper-large-v3-turbo",
+                file=f,
+                language="en",
+            )
     except Exception as e:
-        logger.error("Whisper API error: %s", e)
+        logger.error("Groq Whisper API error: %s", e)
         print(f"[WHISPER] API error ({type(e).__name__}): {e}")
         raise RuntimeError("whisper_api_error") from e
+    finally:
+        import os as _os
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
 
-    text = result.strip() if isinstance(result, str) else str(result).strip()
+    text = result.text.strip() if hasattr(result, "text") else str(result).strip()
     print(f"[WHISPER] Transcript: {text!r}")
 
     if not text:

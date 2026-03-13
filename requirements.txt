@@ -4,4 +4,3 @@ anthropic
 groq
 python-dotenv
 apscheduler
-openai
