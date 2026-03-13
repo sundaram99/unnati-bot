@@ -1,6 +1,6 @@
 python-telegram-bot
 httpx
-groq
+anthropic
 python-dotenv
 apscheduler
 openai

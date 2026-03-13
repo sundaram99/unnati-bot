@@ -1,15 +1,17 @@
 """
-ai.py — Groq-powered AI extraction + OpenAI Whisper transcription for Unnati CRM.
+ai.py — Anthropic Claude-powered AI extraction + OpenAI Whisper transcription for Unnati CRM.
 """
 
 import io
 import os
 import json
 import logging
-from groq import Groq
+import anthropic
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+MODEL = "claude-haiku-4-5-20251001"
 
 # Valid stage values the AI must choose from
 VALID_STAGES = ["Lead", "Evaluating", "Proposal Sent", "Negotiating", "Won", "Lost"]
@@ -42,33 +44,31 @@ Rules:
 """
 
 
-def get_groq_client() -> Groq:
-    """Create a Groq client from env var."""
-    return Groq(api_key=os.environ["GROQ_API_KEY"])
+def get_anthropic_client() -> anthropic.Anthropic:
+    """Create an Anthropic client from env var."""
+    return anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 
 def extract_lead_from_message(raw_text: str) -> dict | None:
     """
-    Send `raw_text` to Groq and parse the returned JSON lead card.
+    Send `raw_text` to Claude and parse the returned JSON lead card.
     Returns a dict with keys: contact_name, company, stage, topic, next_action, confidence.
     Returns None on any failure.
     """
-    client = get_groq_client()
+    client = get_anthropic_client()
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",   # fast, free-tier friendly
-            messages=[
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user",   "content": f"Extract lead from this message:\n\n{raw_text}"},
-            ],
-            temperature=0.1,          # low temp = consistent structured output
+        response = client.messages.create(
+            model=MODEL,
             max_tokens=300,
-            response_format={"type": "json_object"},
+            system=EXTRACTION_SYSTEM_PROMPT,
+            messages=[
+                {"role": "user", "content": f"Extract lead from this message:\n\n{raw_text}"},
+            ],
         )
 
-        content = response.choices[0].message.content
-        print(f"[DEBUG] Raw Groq response:\n{content}\n")
+        content = response.content[0].text
+        print(f"[DEBUG] Raw Claude response:\n{content}\n")
 
         data = json.loads(content)
 
@@ -79,13 +79,13 @@ def extract_lead_from_message(raw_text: str) -> dict | None:
         return data
 
     except json.JSONDecodeError as e:
-        logger.error("Groq returned non-JSON: %s", e)
+        logger.error("Claude returned non-JSON: %s", e)
         print(f"[DEBUG] JSON parse error: {e}")
         print(f"[DEBUG] Raw content that failed to parse: {content!r}")
         return None
     except Exception as e:
-        logger.error("Groq extraction failed: %s", e)
-        print(f"[DEBUG] Groq exception ({type(e).__name__}): {e}")
+        logger.error("Claude extraction failed: %s", e)
+        print(f"[DEBUG] Claude exception ({type(e).__name__}): {e}")
         return None
 
 
@@ -132,7 +132,7 @@ Keep it under 120 words. Punchy. No fluff. Respond in plain text (no markdown he
 def generate_pre_call_brief(contact: dict, notes: list[dict]) -> str:
     """
     Generate a pre-call context brief for a contact using their CRM data + notes.
-    Falls back to a static template if Groq is unavailable.
+    Falls back to a static template if Claude is unavailable.
     """
     notes_text = "\n".join(
         f"- [{n.get('logged_on','')[:10]}] {n.get('note_text','')}"
@@ -147,18 +147,17 @@ def generate_pre_call_brief(contact: dict, notes: list[dict]) -> str:
         f"Recent notes:\n{notes_text}"
     )
 
-    client = get_groq_client()
+    client = get_anthropic_client()
     try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": CONTEXT_SYSTEM_PROMPT},
-                {"role": "user",   "content": prompt},
-            ],
-            temperature=0.4,
+        response = client.messages.create(
+            model=MODEL,
             max_tokens=200,
+            system=CONTEXT_SYSTEM_PROMPT,
+            messages=[
+                {"role": "user", "content": prompt},
+            ],
         )
-        return response.choices[0].message.content.strip()
+        return response.content[0].text.strip()
     except Exception as e:
         logger.error("Pre-call brief generation failed: %s", e)
         # Graceful fallback — always give the founder something useful
@@ -240,18 +239,17 @@ def answer_pipeline_question(question: str, contacts: list, notes: list) -> str:
     pipeline_context = "PIPELINE DATA:\n" + "\n".join(contact_lines)
     user_prompt = f"{pipeline_context}\n\nQUESTION: {question}"
 
-    client = get_groq_client()
+    client = get_anthropic_client()
     try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": PIPELINE_QA_SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt},
-            ],
-            temperature=0.3,
+        response = client.messages.create(
+            model=MODEL,
             max_tokens=400,
+            system=PIPELINE_QA_SYSTEM_PROMPT,
+            messages=[
+                {"role": "user", "content": user_prompt},
+            ],
         )
-        return response.choices[0].message.content.strip()
+        return response.content[0].text.strip()
     except Exception as e:
         logger.error("Pipeline Q&A failed: %s", e)
         print(f"[DEBUG] Pipeline Q&A error ({type(e).__name__}): {e}")
