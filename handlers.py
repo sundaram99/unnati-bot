@@ -748,7 +748,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await thinking.edit_text(
         f"💬 *{question}*\n\n{answer}",
-        parse_mode=ParseMode.None,
+        parse_mode=None,
     )
 
 
