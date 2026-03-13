@@ -264,14 +264,14 @@ WHISPER_COST_PER_MINUTE = 0.006  # USD, as of 2024
 MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB — Whisper API hard limit
 
 
-async def transcribe_voice(audio_bytes: bytes, duration_seconds: int, mime_type: str = "audio/ogg") -> str:
+async def transcribe_voice(audio_bytes: bytes, duration_sec: int, mime_type: str = "audio/ogg") -> str:
     """
     Transcribe audio bytes using OpenAI Whisper API.
 
     Args:
-        audio_bytes:      Raw audio data.
-        duration_seconds: Clip duration (for cost logging).
-        mime_type:        MIME type hint — determines filename extension sent to Whisper.
+        audio_bytes:  Raw audio data.
+        duration_sec: Clip duration in seconds (for cost logging).
+        mime_type:    MIME type hint — determines filename extension sent to Whisper.
 
     Returns:
         Transcribed text string.
@@ -299,10 +299,10 @@ async def transcribe_voice(audio_bytes: bytes, duration_seconds: int, mime_type:
     buf.name = f"audio.{ext}"
 
     # Log estimated cost before the API call
-    cost_usd = (duration_seconds / 60) * WHISPER_COST_PER_MINUTE
+    cost_usd = (duration_sec / 60) * WHISPER_COST_PER_MINUTE
     print(
         f"[WHISPER] Sending {len(audio_bytes) / 1024:.1f} KB "
-        f"({duration_seconds}s) to Whisper. "
+        f"({duration_sec}s) to Whisper. "
         f"Est. cost: ${cost_usd:.4f}"
     )
 
