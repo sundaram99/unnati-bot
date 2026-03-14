@@ -57,12 +57,10 @@ HELP_TEXT = (
     "/remind [time] [message] — Set a reminder\n"
     "/digest — Show today's pipeline digest now\n"
     "/nudge — Check for overdue contacts now\n"
-    "/reset — Delete all your contacts (with confirmation)\n"
     "/createteam [name] — Create a shared team pipeline\n"
     "/jointeam <code> — Join a teammate's pipeline\n"
     "/myteam — Show your team and members\n"
     "/help — Show this message\n\n"
-    "💡 Tip: Forward any WhatsApp message or paste text from a call — I'll extract the deal automatically!\n\n"
     "⏰ Reminder examples:\n"
     "  /remind in 2 hours Call Rahul\n"
     "  /remind tomorrow 9am Send proposal\n"
@@ -322,25 +320,30 @@ async def addcontact_stage(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         f"🏢 *{company}*\n\n📊 Stage: *{stage}* ✓",
         parse_mode=ParseMode.MARKDOWN,
     )
+    source_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Referral", callback_data="source:Referral"),
+         InlineKeyboardButton("LinkedIn", callback_data="source:LinkedIn")],
+        [InlineKeyboardButton("Cold outreach", callback_data="source:Cold outreach"),
+         InlineKeyboardButton("Event", callback_data="source:Event")],
+        [InlineKeyboardButton("Other", callback_data="source:Other")],
+    ])
     await query.message.reply_text(
-        "Step 4/4 — How did you find this lead? (e.g. referral, LinkedIn, cold outreach, event)",
-        reply_markup=ReplyKeyboardMarkup(
-            [["Referral", "LinkedIn"], ["Cold outreach", "Event"], ["Other"]],
-            one_time_keyboard=True,
-            resize_keyboard=True,
-        ),
+        "Step 4/4 — How did you find this lead?",
+        reply_markup=source_keyboard,
     )
     return AC_SOURCE
 
 
 async def addcontact_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Save the full contact to DB and confirm."""
-    source  = update.message.text.strip()
+    query = update.callback_query
+    await query.answer()
+    source  = query.data.split(":", 1)[1]
     contact = context.user_data.get("new_contact", {})
     uid     = _user_id_from_context(context)
 
     sb   = _sb()
-    row  = db.create_contact(
+    db.create_contact(
         sb,
         user_id=uid,
         name=contact["name"],
@@ -350,7 +353,7 @@ async def addcontact_source(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         team_id=_get_team_id(sb, uid),
     )
 
-    await update.message.reply_text(
+    await query.edit_message_text(
         f"✅ *Contact saved!*\n\n"
         f"👤 {contact['name']}\n"
         f"🏢 {contact['company']}\n"
@@ -358,7 +361,6 @@ async def addcontact_source(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"🔗 Source: {source}\n\n"
         f"Add a note? Use /addnote anytime.",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=ReplyKeyboardRemove(),
     )
 
     context.user_data.pop("new_contact", None)
@@ -367,7 +369,7 @@ async def addcontact_source(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def addcontact_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("new_contact", None)
-    await update.message.reply_text("Cancelled.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
 
@@ -378,7 +380,7 @@ def build_addcontact_handler() -> ConversationHandler:
             AC_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, addcontact_name)],
             AC_COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, addcontact_company)],
             AC_STAGE:   [CallbackQueryHandler(addcontact_stage, pattern="^stage:")],
-            AC_SOURCE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, addcontact_source)],
+            AC_SOURCE:  [CallbackQueryHandler(addcontact_source, pattern="^source:")],
         },
         fallbacks=[CommandHandler("cancel", addcontact_cancel)],
         allow_reentry=True,
@@ -1072,52 +1074,6 @@ async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 # ── /reset ────────────────────────────────────────────────────────────────────
-
-async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/reset — Delete all contacts, with inline confirmation."""
-    uid = await _ensure_user(update, context)
-    if not uid:
-        return
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🗑 Yes, delete everything", callback_data="reset_confirm_yes"),
-        InlineKeyboardButton("✕ Cancel",                  callback_data="reset_confirm_no"),
-    ]])
-    await update.message.reply_text(
-        "⚠️ *Are you sure?*\n\n"
-        "This will permanently delete *all your contacts* from the pipeline.\n\n"
-        "This cannot be undone.",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=keyboard,
-    )
-
-
-async def handle_reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Inline keyboard callback: confirm or cancel contact reset."""
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "reset_confirm_no":
-        await query.edit_message_text("Cancelled. Your pipeline is safe.")
-        return
-
-    uid = _user_id_from_context(context)
-    if not uid:
-        sb   = _sb()
-        user = db.get_user(sb, query.message.chat.id)
-        if not user:
-            await query.edit_message_text("Couldn't find your account. Please run /start.")
-            return
-        uid = user["id"]
-        context.user_data["user_id"] = uid
-
-    sb      = _sb()
-    team_id = _get_team_id(sb, uid)
-    count   = db.delete_user_contacts(sb, uid, team_id)
-    await query.edit_message_text(
-        f"🗑 Done. {count} contact(s) deleted. Your pipeline is now empty.\n\n"
-        "Add your first deal with /addcontact"
-    )
-
 
 # ── Unknown command fallback ──────────────────────────────────────────────────
 

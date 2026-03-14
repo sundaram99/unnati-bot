@@ -79,10 +79,6 @@ def build_app() -> Application:
     app.add_handler(
         CallbackQueryHandler(handlers.handle_lead_callback,  pattern="^lead_confirm_")
     )
-    app.add_handler(
-        CallbackQueryHandler(handlers.handle_reset_callback, pattern="^reset_confirm_")
-    )
-
     # ── Simple commands ──
     app.add_handler(CommandHandler("start",   handlers.start))
     app.add_handler(CommandHandler("help",    handlers.help_cmd))
@@ -97,7 +93,6 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("jointeam",   handlers.jointeam_cmd))
     app.add_handler(CommandHandler("myteam",     handlers.myteam_cmd))
     app.add_handler(CommandHandler("remind",     handlers.remind_cmd))
-    app.add_handler(CommandHandler("reset",      handlers.reset_cmd))
 
     # ── Message handlers ──
     # Forwarded text/photo messages (has forward_origin attribute in PTB v21)
