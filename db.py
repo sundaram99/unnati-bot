@@ -6,6 +6,8 @@ Every function takes an httpx.Client as first arg so callers control the connect
 """
 
 import os
+import random
+import string
 import httpx
 from datetime import datetime, timezone
 
@@ -59,6 +61,14 @@ def get_user(sb: httpx.Client, chat_id: int) -> dict | None:
 
 # ── Contacts ─────────────────────────────────────────────────────────────────
 
+def _contact_filter(user_id: str, team_id: str | None) -> dict:
+    """Return the right ownership filter for contact queries.
+    Team members see all contacts tagged with their team; solo users see only their own."""
+    if team_id:
+        return {"team_id": f"eq.{team_id}"}
+    return {"user_id": f"eq.{user_id}"}
+
+
 def create_contact(
     sb: httpx.Client,
     user_id: str,
@@ -66,36 +76,42 @@ def create_contact(
     company: str,
     stage: str,
     source: str = "manual",
+    team_id: str | None = None,
 ) -> dict:
     """Insert a new contact and return the created row."""
     now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "user_id": user_id,
+        "name": name,
+        "company": company,
+        "stage": stage,
+        "source": source,
+        "added_on": now,
+        "last_updated": now,
+        "interaction_count": 1,
+    }
+    if team_id:
+        payload["team_id"] = team_id
     r = sb.post(
         "contacts",
-        json={
-            "user_id": user_id,
-            "name": name,
-            "company": company,
-            "stage": stage,
-            "source": source,
-            "added_on": now,
-            "last_updated": now,
-            "interaction_count": 1,
-        },
+        json=payload,
         headers={"Prefer": "return=representation"},
     )
     data = _data(r)
     return data[0] if data else {}
 
 
-def get_contacts_by_stage(sb: httpx.Client, user_id: str) -> dict[str, list]:
+def get_contacts_by_stage(
+    sb: httpx.Client, user_id: str, team_id: str | None = None
+) -> dict[str, list]:
     """
-    Fetch all non-terminal contacts for a user, grouped by stage.
+    Fetch all non-terminal contacts for a user (or their team), grouped by stage.
     Returns a dict: { stage_name: [contact, ...] }
     """
     r = sb.get(
         "contacts",
         params={
-            "user_id": f"eq.{user_id}",
+            **_contact_filter(user_id, team_id),
             "stage": "not.in.(Won,Lost)",
             "order": "last_updated.desc",
         },
@@ -110,12 +126,14 @@ def get_contacts_by_stage(sb: httpx.Client, user_id: str) -> dict[str, list]:
 get_contacts = get_contacts_by_stage
 
 
-def get_contact_by_name(sb: httpx.Client, user_id: str, name: str) -> dict | None:
+def get_contact_by_name(
+    sb: httpx.Client, user_id: str, name: str, team_id: str | None = None
+) -> dict | None:
     """Find the most recently updated contact whose name contains `name` (case-insensitive)."""
     r = sb.get(
         "contacts",
         params={
-            "user_id": f"eq.{user_id}",
+            **_contact_filter(user_id, team_id),
             "name": f"ilike.%{name}%",
             "order": "last_updated.desc",
             "limit": "1",
@@ -131,12 +149,14 @@ def get_all_users(sb: httpx.Client) -> list:
     return _data(r)
 
 
-def get_active_contacts(sb: httpx.Client, user_id: str) -> list:
-    """Return a flat list of all non-terminal contacts for a user."""
+def get_active_contacts(
+    sb: httpx.Client, user_id: str, team_id: str | None = None
+) -> list:
+    """Return a flat list of all non-terminal contacts for a user (or their team)."""
     r = sb.get(
         "contacts",
         params={
-            "user_id": f"eq.{user_id}",
+            **_contact_filter(user_id, team_id),
             "stage": "not.in.(Won,Lost)",
             "order": "last_updated.asc",
         },
@@ -144,12 +164,14 @@ def get_active_contacts(sb: httpx.Client, user_id: str) -> list:
     return _data(r)
 
 
-def get_latest_contact(sb: httpx.Client, user_id: str) -> dict | None:
+def get_latest_contact(
+    sb: httpx.Client, user_id: str, team_id: str | None = None
+) -> dict | None:
     """Return the contact that was most recently touched."""
     r = sb.get(
         "contacts",
         params={
-            "user_id": f"eq.{user_id}",
+            **_contact_filter(user_id, team_id),
             "stage": "not.in.(Won,Lost)",
             "order": "last_updated.desc",
             "limit": "1",
@@ -234,6 +256,80 @@ def get_recent_notes_for_user(sb: httpx.Client, user_id: str, limit: int = 40) -
         },
     )
     return _data(r)
+
+
+# ── Teams ────────────────────────────────────────────────────────────────────
+
+def _random_invite_code() -> str:
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+
+def create_team(sb: httpx.Client, user_id: str, name: str) -> dict | None:
+    """Create a new team, add creator as owner, return team dict. Returns None on failure."""
+    for _ in range(5):  # retry on rare invite_code collision
+        code = _random_invite_code()
+        r = sb.post(
+            "teams",
+            json={"name": name, "created_by": user_id, "invite_code": code},
+            headers={"Prefer": "return=representation"},
+        )
+        if r.status_code not in (200, 201):
+            continue
+        team = _data(r)[0]
+        sb.post(
+            "team_members",
+            json={"team_id": team["id"], "user_id": user_id, "role": "owner"},
+            headers={"Prefer": "return=representation"},
+        ).raise_for_status()
+        return team
+    return None
+
+
+def get_user_team(sb: httpx.Client, user_id: str) -> dict | None:
+    """Return the team the user belongs to, or None if solo."""
+    r = sb.get("team_members", params={"user_id": f"eq.{user_id}", "limit": "1"})
+    rows = _data(r)
+    if not rows:
+        return None
+    r2 = sb.get("teams", params={"id": f"eq.{rows[0]['team_id']}", "limit": "1"})
+    d2 = _data(r2)
+    return d2[0] if d2 else None
+
+
+def join_team(
+    sb: httpx.Client, user_id: str, invite_code: str
+) -> tuple[dict | None, str | None]:
+    """Join a team by invite code. Returns (team, error_key) — error_key is None on success."""
+    r = sb.get("teams", params={"invite_code": f"eq.{invite_code.upper()}", "limit": "1"})
+    teams = _data(r)
+    if not teams:
+        return None, "invalid_code"
+    team = teams[0]
+    # Already a member of this or any team?
+    r2 = sb.get("team_members", params={"user_id": f"eq.{user_id}", "limit": "1"})
+    existing = _data(r2)
+    if existing:
+        if existing[0]["team_id"] == team["id"]:
+            return team, "already_member"
+        return None, "already_in_team"
+    sb.post(
+        "team_members",
+        json={"team_id": team["id"], "user_id": user_id, "role": "member"},
+        headers={"Prefer": "return=representation"},
+    ).raise_for_status()
+    return team, None
+
+
+def get_team_members(sb: httpx.Client, team_id: str) -> list:
+    """Return all members of a team, each with user name and role."""
+    r = sb.get("team_members", params={"team_id": f"eq.{team_id}", "select": "role,joined_at,user_id"})
+    members = _data(r)
+    result = []
+    for m in members:
+        ur = sb.get("users", params={"id": f"eq.{m['user_id']}", "select": "name", "limit": "1"})
+        ud = _data(ur)
+        result.append({**m, "user_name": ud[0]["name"] if ud else "Unknown"})
+    return result
 
 
 # ── Heat score ───────────────────────────────────────────────────────────────

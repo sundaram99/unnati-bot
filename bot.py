@@ -87,9 +87,12 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("context", handlers.context_cmd))
     app.add_handler(CommandHandler("won",     handlers.won))
     app.add_handler(CommandHandler("lost",    handlers.lost))
-    app.add_handler(CommandHandler("digest",  handlers.digest_cmd))
-    app.add_handler(CommandHandler("nudge",   handlers.nudge_cmd))
-    app.add_handler(CommandHandler("ask",     handlers.ask_cmd))
+    app.add_handler(CommandHandler("digest",     handlers.digest_cmd))
+    app.add_handler(CommandHandler("nudge",      handlers.nudge_cmd))
+    app.add_handler(CommandHandler("ask",        handlers.ask_cmd))
+    app.add_handler(CommandHandler("createteam", handlers.createteam_cmd))
+    app.add_handler(CommandHandler("jointeam",   handlers.jointeam_cmd))
+    app.add_handler(CommandHandler("myteam",     handlers.myteam_cmd))
 
     # ── Message handlers ──
     # Forwarded text/photo messages (has forward_origin attribute in PTB v21)

@@ -66,6 +66,12 @@ def _sb():
     return db.get_client()
 
 
+def _get_team_id(sb, uid: str) -> str | None:
+    """Return the team_id for this user, or None if they're solo."""
+    team = db.get_user_team(sb, uid)
+    return team["id"] if team else None
+
+
 def _user_id_from_context(context: ContextTypes.DEFAULT_TYPE) -> str | None:
     """Pull the Supabase user UUID stored in context.user_data after /start."""
     return context.user_data.get("user_id")
@@ -211,6 +217,7 @@ async def addcontact_source(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         company=contact["company"],
         stage=contact["stage"],
         source=source,
+        team_id=_get_team_id(sb, uid),
     )
 
     await update.message.reply_text(
@@ -257,7 +264,7 @@ async def pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     sb      = _sb()
-    grouped = db.get_contacts_by_stage(sb, uid)
+    grouped = db.get_contacts_by_stage(sb, uid, team_id=_get_team_id(sb, uid))
 
     if not grouped:
         await update.message.reply_text(
@@ -317,7 +324,7 @@ async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     name = " ".join(args)
     sb   = _sb()
-    contact = db.get_contact_by_name(sb, uid, name)
+    contact = db.get_contact_by_name(sb, uid, name, team_id=_get_team_id(sb, uid))
 
     if not contact:
         await update.message.reply_text(
@@ -354,7 +361,7 @@ async def won(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     sb      = _sb()
-    contact = db.get_latest_contact(sb, uid)
+    contact = db.get_latest_contact(sb, uid, team_id=_get_team_id(sb, uid))
 
     if not contact:
         await update.message.reply_text("No active deals found. Add one with /addcontact")
@@ -376,7 +383,7 @@ async def lost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     sb      = _sb()
-    contact = db.get_latest_contact(sb, uid)
+    contact = db.get_latest_contact(sb, uid, team_id=_get_team_id(sb, uid))
 
     if not contact:
         await update.message.reply_text("No active deals found.")
@@ -409,7 +416,7 @@ async def addnote_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     uid  = _user_id_from_context(context)
     sb   = _sb()
 
-    contact = db.get_contact_by_name(sb, uid, name)
+    contact = db.get_contact_by_name(sb, uid, name, team_id=_get_team_id(sb, uid))
     if not contact:
         await update.message.reply_text(
             f"No contact found matching '{name}'. Try again or /cancel."
@@ -526,27 +533,44 @@ async def handle_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("Session expired. Please forward the message again.")
         return
 
-    sb  = _sb()
-    row = db.create_contact(
-        sb,
-        user_id=uid,
-        name=lead.get("contact_name", "Unknown"),
-        company=lead.get("company", "Unknown"),
-        stage=lead.get("stage", "Lead"),
-        source=lead.get("source", "forwarded"),
-    )
+    sb           = _sb()
+    contact_name = lead.get("contact_name", "Unknown")
+    stage        = lead.get("stage", "Lead")
+    team_id      = _get_team_id(sb, uid)
 
-    # Also log the topic as the first note
+    # ── Deduplication: check for existing contact with same name ──────────────
+    existing = db.get_contact_by_name(sb, uid, contact_name, team_id=team_id)
+
+    if existing:
+        row = existing
+        # Update stage if the new one is further along
+        db.update_contact_stage(sb, row["id"], stage)
+        result_msg = (
+            f"🔄 *{contact_name}* already in pipeline — updated stage to *{stage}*.\n\n"
+            f"Use /pipeline to view."
+        )
+    else:
+        row = db.create_contact(
+            sb,
+            user_id=uid,
+            name=contact_name,
+            company=lead.get("company", "Unknown"),
+            stage=stage,
+            source=lead.get("source", "forwarded"),
+            team_id=team_id,
+        )
+        result_msg = (
+            f"✅ *{contact_name}* from *{lead.get('company')}* saved to pipeline!\n\n"
+            f"Stage: {stage} · Use /pipeline to view."
+        )
+
+    # Log topic and next action as notes either way
     if row and lead.get("topic"):
         db.add_note(sb, row["id"], uid, f"Topic: {lead['topic']}")
     if row and lead.get("next_action"):
         db.add_note(sb, row["id"], uid, f"Next action: {lead['next_action']}")
 
-    await query.edit_message_text(
-        f"✅ *{lead.get('contact_name')}* from *{lead.get('company')}* saved to pipeline!\n\n"
-        f"Stage: {lead.get('stage')} · Use /pipeline to view.",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    await query.edit_message_text(result_msg, parse_mode=ParseMode.MARKDOWN)
 
 
 # ── Plain text handler (pasted notes / non-forwarded messages) ───────────────
@@ -741,7 +765,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     thinking = await update.message.reply_text("🤔 Analysing your pipeline…")
 
     sb       = _sb()
-    contacts = db.get_active_contacts(sb, uid)
+    contacts = db.get_active_contacts(sb, uid, team_id=_get_team_id(sb, uid))
     notes    = db.get_recent_notes_for_user(sb, uid, limit=40)
 
     answer = ai.answer_pipeline_question(question, contacts, notes)
@@ -750,6 +774,107 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"💬 *{question}*\n\n{answer}",
         parse_mode=None,
     )
+
+
+# ── /createteam ──────────────────────────────────────────────────────────────
+
+async def createteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/createteam [name] — Create a new shared team pipeline."""
+    uid = await _ensure_user(update, context)
+    if not uid:
+        return
+
+    name = " ".join(context.args or []).strip() or "My Team"
+    sb   = _sb()
+
+    # Block if already in a team
+    existing = db.get_user_team(sb, uid)
+    if existing:
+        await update.message.reply_text(
+            f"⚠️ You're already in team *{existing['name']}*.\n"
+            f"Invite code: `{existing['invite_code']}`\n\n"
+            f"Use /myteam to see members.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    team = db.create_team(sb, uid, name)
+    if not team:
+        await update.message.reply_text("❌ Failed to create team. Please try again.")
+        return
+
+    await update.message.reply_text(
+        f"🎉 Team *{team['name']}* created!\n\n"
+        f"Share this invite code with your teammates:\n"
+        f"`{team['invite_code']}`\n\n"
+        f"They can join with: /jointeam {team['invite_code']}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ── /jointeam ─────────────────────────────────────────────────────────────────
+
+async def jointeam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/jointeam <code> — Join a team using an invite code."""
+    uid = await _ensure_user(update, context)
+    if not uid:
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /jointeam <invite-code>\nExample: /jointeam ABC123")
+        return
+
+    code = context.args[0].strip()
+    sb   = _sb()
+    team, err = db.join_team(sb, uid, code)
+
+    if err == "invalid_code":
+        await update.message.reply_text("❌ Invalid invite code. Check the code and try again.")
+    elif err == "already_member":
+        await update.message.reply_text(
+            f"✅ You're already in team *{team['name']}*. Use /myteam to see members.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    elif err == "already_in_team":
+        await update.message.reply_text(
+            "⚠️ You're already in another team. You can only be in one team at a time."
+        )
+    else:
+        await update.message.reply_text(
+            f"✅ Joined team *{team['name']}*!\n\n"
+            f"You can now see your team's shared pipeline with /pipeline.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
+# ── /myteam ───────────────────────────────────────────────────────────────────
+
+async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/myteam — Show current team and its members."""
+    uid = await _ensure_user(update, context)
+    if not uid:
+        return
+
+    sb   = _sb()
+    team = db.get_user_team(sb, uid)
+
+    if not team:
+        await update.message.reply_text(
+            "You're not part of a team yet.\n"
+            "• Create one: /createteam [name]\n"
+            "• Join one: /jointeam <code>"
+        )
+        return
+
+    members = db.get_team_members(sb, team["id"])
+    lines   = [f"👥 *Team: {team['name']}*", f"Invite code: `{team['invite_code']}`\n"]
+
+    for m in members:
+        role_badge = "👑" if m["role"] == "owner" else "👤"
+        joined     = str(m.get("joined_at", ""))[:10]
+        lines.append(f"{role_badge} {m['user_name']} — {m['role']} (since {joined})")
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
 # ── Unknown command fallback ──────────────────────────────────────────────────
