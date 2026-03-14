@@ -314,8 +314,15 @@ async def context_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not uid:
         return
 
-    # Extract name from command args
-    args = context.args
+    # Extract name from command args, with fallback to raw message text parsing
+    args = context.args or []
+    if not args:
+        # Fallback: parse directly from message text (handles edge cases with some clients)
+        raw = (update.message.text or "").strip()
+        parts = raw.split(None, 1)  # split on first whitespace
+        if len(parts) > 1:
+            args = parts[1].split()
+
     if not args:
         await update.message.reply_text(
             "Usage: /context [contact name]\nExample: /context Sharma"
