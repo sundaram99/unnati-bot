@@ -57,6 +57,7 @@ HELP_TEXT = (
     "/remind [time] [message] — Set a reminder\n"
     "/digest — Show today's pipeline digest now\n"
     "/nudge — Check for overdue contacts now\n"
+    "/reset — Delete all your contacts (with confirmation)\n"
     "/createteam [name] — Create a shared team pipeline\n"
     "/jointeam <code> — Join a teammate's pipeline\n"
     "/myteam — Show your team and members\n"
@@ -151,6 +152,21 @@ def parse_remind_time(text: str) -> tuple[datetime | None, str]:
         except ValueError:
             return None, ""
         return target.astimezone(timezone.utc), msg.strip()
+
+    # ── "<msg> in N minutes/hours/days" — time expression at end ─────────────
+    m = re.match(
+        r"^(.+?)\s+in\s+(\d+)\s+(minute|minutes|min|hour|hours|hr|day|days)$",
+        text, re.IGNORECASE,
+    )
+    if m:
+        msg, n, unit = m.group(1).strip(), int(m.group(2)), m.group(3).lower()
+        if unit in ("minute", "minutes", "min"):
+            delta = timedelta(minutes=n)
+        elif unit in ("hour", "hours", "hr"):
+            delta = timedelta(hours=n)
+        else:
+            delta = timedelta(days=n)
+        return datetime.now(timezone.utc) + delta, msg
 
     return None, ""
 
@@ -1031,13 +1047,63 @@ async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     sb = _sb()
     db.create_reminder(sb, update.effective_chat.id, remind_at, message)
 
-    # Format time in IST for the confirmation
-    from datetime import timezone, timedelta
+    # Format time in IST for the confirmation (portable — no %-d Linux-only flag)
     ist = timezone(timedelta(hours=5, minutes=30))
-    formatted = remind_at.astimezone(ist).strftime("%-d %b at %-I:%M %p IST")
+    d = remind_at.astimezone(ist)
+    hour12 = d.hour % 12 or 12
+    ampm = "AM" if d.hour < 12 else "PM"
+    formatted = f"{d.day} {d.strftime('%b')} at {hour12}:{d.strftime('%M')} {ampm} IST"
     await update.message.reply_text(
         f"⏰ Reminder set for *{formatted}*\n_{message}_",
         parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ── /reset ────────────────────────────────────────────────────────────────────
+
+async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/reset — Delete all contacts, with inline confirmation."""
+    uid = await _ensure_user(update, context)
+    if not uid:
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🗑 Yes, delete everything", callback_data="reset_confirm_yes"),
+        InlineKeyboardButton("✕ Cancel",                  callback_data="reset_confirm_no"),
+    ]])
+    await update.message.reply_text(
+        "⚠️ *Are you sure?*\n\n"
+        "This will permanently delete *all your contacts* from the pipeline.\n\n"
+        "This cannot be undone.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=keyboard,
+    )
+
+
+async def handle_reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline keyboard callback: confirm or cancel contact reset."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "reset_confirm_no":
+        await query.edit_message_text("Cancelled. Your pipeline is safe.")
+        return
+
+    uid = _user_id_from_context(context)
+    if not uid:
+        sb   = _sb()
+        user = db.get_user(sb, query.message.chat.id)
+        if not user:
+            await query.edit_message_text("Couldn't find your account. Please run /start.")
+            return
+        uid = user["id"]
+        context.user_data["user_id"] = uid
+
+    sb      = _sb()
+    team_id = _get_team_id(sb, uid)
+    count   = db.delete_user_contacts(sb, uid, team_id)
+    await query.edit_message_text(
+        f"🗑 Done. {count} contact(s) deleted. Your pipeline is now empty.\n\n"
+        "Add your first deal with /addcontact"
     )
 
 

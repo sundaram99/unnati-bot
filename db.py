@@ -352,6 +352,20 @@ def get_team_members(sb: httpx.Client, team_id: str) -> list:
     return result
 
 
+# ── Reset ────────────────────────────────────────────────────────────────────
+
+def delete_user_contacts(sb: httpx.Client, user_id: str, team_id: str | None = None) -> int:
+    """Delete all contacts for a user (or their team). Returns count deleted."""
+    params = {**_contact_filter(user_id, team_id)}
+    r = sb.delete(
+        "contacts",
+        params=params,
+        headers={"Prefer": "return=representation"},
+    )
+    data = r.json() if r.status_code in (200, 201) else []
+    return len(data) if isinstance(data, list) else 0
+
+
 # ── Bot ↔ Web Link Tokens ────────────────────────────────────────────────────
 
 def consume_link_token(sb: httpx.Client, token: str, bot_user_id: str) -> bool:
