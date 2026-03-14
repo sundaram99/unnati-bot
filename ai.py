@@ -60,24 +60,25 @@ def get_anthropic_client() -> anthropic.Anthropic:
 
 def extract_lead_from_message(raw_text: str) -> dict | None:
     """
-    Send `raw_text` to Claude and parse the returned JSON lead card.
+    Send `raw_text` to Groq and parse the returned JSON lead card.
     Returns a dict with keys: contact_name, company, stage, topic, next_action, confidence.
     Returns None on any failure.
     """
-    client = get_anthropic_client()
+    client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
     try:
-        response = client.messages.create(
-            model=MODEL,
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
             max_tokens=300,
-            system=EXTRACTION_SYSTEM_PROMPT,
             messages=[
-                {"role": "user", "content": f"Extract lead from this message:\n\n{raw_text}"},
+                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user",   "content": f"Extract lead from this message:\n\n{raw_text}"},
             ],
+            response_format={"type": "json_object"},
         )
 
-        content = response.content[0].text
-        print(f"[DEBUG] Raw Claude response:\n{content}\n")
+        content = response.choices[0].message.content
+        print(f"[DEBUG] Raw Groq response:\n{content}\n")
 
         data = json.loads(content)
 
@@ -88,13 +89,13 @@ def extract_lead_from_message(raw_text: str) -> dict | None:
         return data
 
     except json.JSONDecodeError as e:
-        logger.error("Claude returned non-JSON: %s", e)
+        logger.error("Groq returned non-JSON: %s", e)
         print(f"[DEBUG] JSON parse error: {e}")
         print(f"[DEBUG] Raw content that failed to parse: {content!r}")
         return None
     except Exception as e:
-        logger.error("Claude extraction failed: %s", e)
-        print(f"[DEBUG] Claude exception ({type(e).__name__}): {e}")
+        logger.error("Groq extraction failed: %s", e)
+        print(f"[DEBUG] Groq exception ({type(e).__name__}): {e}")
         return None
 
 
