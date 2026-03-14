@@ -93,6 +93,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("createteam", handlers.createteam_cmd))
     app.add_handler(CommandHandler("jointeam",   handlers.jointeam_cmd))
     app.add_handler(CommandHandler("myteam",     handlers.myteam_cmd))
+    app.add_handler(CommandHandler("remind",     handlers.remind_cmd))
 
     # ── Message handlers ──
     # Forwarded text/photo messages (has forward_origin attribute in PTB v21)

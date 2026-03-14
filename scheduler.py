@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from telegram import Bot
 from telegram.constants import ParseMode
 
@@ -143,6 +144,27 @@ async def send_nudges_for_user(bot: Bot, user: dict) -> None:
             logger.error("Failed to send no-overdue message to %s: %s", chat_id, e)
 
 
+# ── Reminders ─────────────────────────────────────────────────────────────────
+
+async def check_and_send_reminders(bot: Bot) -> None:
+    """Fire any reminders that are due. Runs every 60 seconds."""
+    try:
+        sb  = db.get_client()
+        due = db.get_due_reminders(sb)
+        for r in due:
+            try:
+                await bot.send_message(
+                    chat_id=r["chat_id"],
+                    text=f"⏰ *Reminder*\n\n{r['message']}",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                db.mark_reminder_sent(sb, r["id"])
+            except Exception as e:
+                logger.error("Failed to send reminder %s to %s: %s", r["id"], r["chat_id"], e)
+    except Exception as e:
+        logger.error("Reminder check failed: %s", e)
+
+
 # ── Broadcast wrappers (called by scheduler jobs) ─────────────────────────────
 
 async def send_daily_digest(bot: Bot) -> None:
@@ -184,6 +206,15 @@ def build_scheduler(bot: Bot) -> AsyncIOScheduler:
         CronTrigger(hour=10, minute=0, timezone="Asia/Kolkata"),
         args=[bot],
         id="inactivity_nudge",
+        replace_existing=True,
+    )
+
+    # Every 60 seconds — fire due reminders
+    scheduler.add_job(
+        check_and_send_reminders,
+        IntervalTrigger(seconds=60),
+        args=[bot],
+        id="reminder_check",
         replace_existing=True,
     )
 

@@ -352,6 +352,78 @@ def get_team_members(sb: httpx.Client, team_id: str) -> list:
     return result
 
 
+# ── Bot ↔ Web Link Tokens ────────────────────────────────────────────────────
+
+def consume_link_token(sb: httpx.Client, token: str, bot_user_id: str) -> bool:
+    """Validate a one-time link token and attach supabase_auth_id to the bot user row.
+    Returns True on success, False if token is expired, used, or not found."""
+    r = sb.get(
+        "bot_link_tokens",
+        params={
+            "token": f"eq.{token}",
+            "used": "eq.false",
+            "expires_at": f"gt.{datetime.now(timezone.utc).isoformat()}",
+            "limit": "1",
+        },
+    )
+    rows = _data(r)
+    if not rows:
+        return False
+    auth_id = rows[0]["supabase_auth_id"]
+    # Link the web auth UUID to this bot user
+    sb.patch(
+        "users",
+        json={"supabase_auth_id": auth_id},
+        params={"id": f"eq.{bot_user_id}"},
+        headers={"Prefer": "return=representation"},
+    ).raise_for_status()
+    # Mark token used
+    sb.patch(
+        "bot_link_tokens",
+        json={"used": True},
+        params={"token": f"eq.{token}"},
+    ).raise_for_status()
+    return True
+
+
+# ── Reminders ─────────────────────────────────────────────────────────────────
+
+def create_reminder(sb: httpx.Client, chat_id: int, remind_at: datetime, message: str) -> dict:
+    """Insert a new reminder row and return it."""
+    r = sb.post(
+        "reminders",
+        json={
+            "chat_id": chat_id,
+            "remind_at": remind_at.isoformat(),
+            "message": message,
+        },
+        headers={"Prefer": "return=representation"},
+    )
+    data = _data(r)
+    return data[0] if data else {}
+
+
+def get_due_reminders(sb: httpx.Client) -> list:
+    """Return all unsent reminders whose remind_at is in the past."""
+    r = sb.get(
+        "reminders",
+        params={
+            "sent": "eq.false",
+            "remind_at": f"lt.{datetime.now(timezone.utc).isoformat()}",
+        },
+    )
+    return _data(r)
+
+
+def mark_reminder_sent(sb: httpx.Client, reminder_id: str) -> None:
+    """Mark a reminder as sent."""
+    sb.patch(
+        "reminders",
+        json={"sent": True},
+        params={"id": f"eq.{reminder_id}"},
+    ).raise_for_status()
+
+
 # ── Heat score ───────────────────────────────────────────────────────────────
 
 def heat_score(contact: dict) -> int:

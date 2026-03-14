@@ -6,6 +6,8 @@ Conversation flows use PTB's ConversationHandler with per-user state.
 """
 
 import logging
+import re
+from datetime import datetime, timezone, timedelta
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -52,11 +54,105 @@ HELP_TEXT = (
     "/lost — Mark latest deal as lost\n"
     "/addnote — Add a note to a contact\n"
     "/ask [question] — Ask anything about your pipeline\n"
+    "/remind [time] [message] — Set a reminder\n"
     "/digest — Show today's pipeline digest now\n"
     "/nudge — Check for overdue contacts now\n"
+    "/createteam [name] — Create a shared team pipeline\n"
+    "/jointeam <code> — Join a teammate's pipeline\n"
+    "/myteam — Show your team and members\n"
     "/help — Show this message\n\n"
-    "💡 Tip: Forward any WhatsApp message or paste text from a call — I'll extract the deal automatically!"
+    "💡 Tip: Forward any WhatsApp message or paste text from a call — I'll extract the deal automatically!\n\n"
+    "⏰ Reminder examples:\n"
+    "  /remind in 2 hours Call Rahul\n"
+    "  /remind tomorrow 9am Send proposal\n"
+    "  /remind 20 march 3pm Follow up"
 )
+
+# IST offset
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+MONTH_MAP = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    "january": 1, "february": 2, "march": 3, "april": 4, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+}
+
+
+def parse_remind_time(text: str) -> tuple[datetime | None, str]:
+    """Parse '/remind <time_expr> <message>' text (without the /remind prefix).
+    Returns (remind_at_utc, message) or (None, '') on failure.
+    Supported:
+      in N minutes/hours/days
+      tomorrow [H:MM | Ham/pm]
+      DD month [H:MM | Ham/pm]
+    All times assumed IST.
+    """
+    text = text.strip()
+
+    # ── "in N minutes/hours/days <msg>" ──────────────────────────────────────
+    m = re.match(r"^in\s+(\d+)\s+(minute|minutes|min|hour|hours|hr|day|days)\s+(.+)$",
+                 text, re.IGNORECASE)
+    if m:
+        n, unit, msg = int(m.group(1)), m.group(2).lower(), m.group(3).strip()
+        if unit in ("minute", "minutes", "min"):
+            delta = timedelta(minutes=n)
+        elif unit in ("hour", "hours", "hr"):
+            delta = timedelta(hours=n)
+        else:
+            delta = timedelta(days=n)
+        return datetime.now(timezone.utc) + delta, msg
+
+    # ── "tomorrow [time] <msg>" ───────────────────────────────────────────────
+    m = re.match(
+        r"^tomorrow\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(.+)$",
+        text, re.IGNORECASE
+    )
+    if m:
+        hour, minute, ampm, msg = m.group(1), m.group(2), m.group(3), m.group(4)
+        hour, minute = int(hour), int(minute or 0)
+        if ampm:
+            ampm = ampm.lower()
+            if ampm == "pm" and hour != 12:
+                hour += 12
+            elif ampm == "am" and hour == 12:
+                hour = 0
+        now_ist = datetime.now(_IST)
+        target = (now_ist + timedelta(days=1)).replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        return target.astimezone(timezone.utc), msg.strip()
+
+    # ── "DD month [time] <msg>" ───────────────────────────────────────────────
+    m = re.match(
+        r"^(\d{1,2})\s+([a-zA-Z]+)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(.+)$",
+        text, re.IGNORECASE
+    )
+    if m:
+        day = int(m.group(1))
+        month_str = m.group(2).lower()
+        hour, minute = int(m.group(3)), int(m.group(4) or 0)
+        ampm, msg = m.group(5), m.group(6)
+        month = MONTH_MAP.get(month_str[:3])
+        if not month:
+            return None, ""
+        if ampm:
+            ampm = ampm.lower()
+            if ampm == "pm" and hour != 12:
+                hour += 12
+            elif ampm == "am" and hour == 12:
+                hour = 0
+        now_ist = datetime.now(_IST)
+        year = now_ist.year
+        try:
+            target = datetime(year, month, day, hour, minute, 0, tzinfo=_IST)
+            if target < now_ist.replace(tzinfo=_IST):
+                target = target.replace(year=year + 1)
+        except ValueError:
+            return None, ""
+        return target.astimezone(timezone.utc), msg.strip()
+
+    return None, ""
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -102,7 +198,7 @@ async def _ensure_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> st
 # ── /start ───────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Register the user and greet them."""
+    """Register the user and greet them. Also handles deep-link account linking."""
     chat    = update.effective_chat
     tg_user = update.effective_user
     name    = tg_user.full_name or tg_user.username or "Founder"
@@ -112,6 +208,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if user:
         context.user_data["user_id"] = user["id"]
+
+    # ── Handle deep-link token: /start link_XXXXXXXX ──────────────────────────
+    args = context.args or []
+    if args and args[0].startswith("link_"):
+        token = args[0][5:]  # strip "link_" prefix
+        if user and db.consume_link_token(sb, token, user["id"]):
+            await update.message.reply_text(
+                "✅ *Web dashboard linked!*\n\n"
+                "Refresh the dashboard — your pipeline is now synced to this account.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ That link has expired or was already used.\n"
+                "Go back to the dashboard and click *Link Telegram Bot* again.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        return
 
     await update.message.reply_text(
         f"🚀 *Welcome to Unnati CRM, {name}!*\n\n"
@@ -882,6 +996,49 @@ async def myteam_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines.append(f"{role_badge} {m['user_name']} — {m['role']} (since {joined})")
 
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+# ── /remind ───────────────────────────────────────────────────────────────────
+
+async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/remind [time] [message] — Set a time-based reminder."""
+    uid = await _ensure_user(update, context)
+    if not uid:
+        return
+
+    text = " ".join(context.args or "").strip()
+    if not text:
+        await update.message.reply_text(
+            "⏰ *Set a reminder:*\n\n"
+            "Examples:\n"
+            "  /remind in 2 hours Call Rahul\n"
+            "  /remind tomorrow 9am Send proposal\n"
+            "  /remind 20 march 3pm Follow up on contract",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    remind_at, message = parse_remind_time(text)
+    if not remind_at or not message:
+        await update.message.reply_text(
+            "⚠️ Couldn't parse that time. Try:\n"
+            "  /remind in 2 hours Call Rahul\n"
+            "  /remind tomorrow 9am Send proposal\n"
+            "  /remind 20 march 3pm Follow up"
+        )
+        return
+
+    sb = _sb()
+    db.create_reminder(sb, update.effective_chat.id, remind_at, message)
+
+    # Format time in IST for the confirmation
+    from datetime import timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    formatted = remind_at.astimezone(ist).strftime("%-d %b at %-I:%M %p IST")
+    await update.message.reply_text(
+        f"⏰ Reminder set for *{formatted}*\n_{message}_",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 # ── Unknown command fallback ──────────────────────────────────────────────────
