@@ -264,13 +264,23 @@ def _random_invite_code() -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 
+def _resolve_chat_id(sb: httpx.Client, user_uuid: str) -> int | None:
+    """Look up the Telegram chat_id (bigint) for a Supabase user UUID."""
+    r = sb.get("users", params={"id": f"eq.{user_uuid}", "select": "telegram_chat_id", "limit": "1"})
+    rows = _data(r)
+    return rows[0]["telegram_chat_id"] if rows else None
+
+
 def create_team(sb: httpx.Client, user_id: str, name: str) -> dict | None:
     """Create a new team, add creator as owner, return team dict. Returns None on failure."""
+    chat_id = _resolve_chat_id(sb, user_id)
+    if chat_id is None:
+        return None
     for _ in range(5):  # retry on rare invite_code collision
         code = _random_invite_code()
         r = sb.post(
             "teams",
-            json={"name": name, "created_by": user_id, "invite_code": code},
+            json={"name": name, "created_by": chat_id, "invite_code": code},
             headers={"Prefer": "return=representation"},
         )
         if r.status_code not in (200, 201):
@@ -278,7 +288,7 @@ def create_team(sb: httpx.Client, user_id: str, name: str) -> dict | None:
         team = _data(r)[0]
         sb.post(
             "team_members",
-            json={"team_id": team["id"], "user_id": user_id, "role": "owner"},
+            json={"team_id": team["id"], "user_id": chat_id, "role": "owner"},
             headers={"Prefer": "return=representation"},
         ).raise_for_status()
         return team
@@ -286,27 +296,36 @@ def create_team(sb: httpx.Client, user_id: str, name: str) -> dict | None:
 
 
 def get_user_team(sb: httpx.Client, user_id: str) -> dict | None:
-    """Return the team the user belongs to, or None if solo."""
-    r = sb.get("team_members", params={"user_id": f"eq.{user_id}", "limit": "1"})
-    rows = _data(r)
-    if not rows:
+    """Return the team the user belongs to, or None if solo or on any error."""
+    try:
+        chat_id = _resolve_chat_id(sb, user_id)
+        if chat_id is None:
+            return None
+        r = sb.get("team_members", params={"user_id": f"eq.{chat_id}", "limit": "1"})
+        rows = _data(r)
+        if not rows:
+            return None
+        r2 = sb.get("teams", params={"id": f"eq.{rows[0]['team_id']}", "limit": "1"})
+        d2 = _data(r2)
+        return d2[0] if d2 else None
+    except Exception:
         return None
-    r2 = sb.get("teams", params={"id": f"eq.{rows[0]['team_id']}", "limit": "1"})
-    d2 = _data(r2)
-    return d2[0] if d2 else None
 
 
 def join_team(
     sb: httpx.Client, user_id: str, invite_code: str
 ) -> tuple[dict | None, str | None]:
     """Join a team by invite code. Returns (team, error_key) — error_key is None on success."""
+    chat_id = _resolve_chat_id(sb, user_id)
+    if chat_id is None:
+        return None, "invalid_code"
     r = sb.get("teams", params={"invite_code": f"eq.{invite_code.upper()}", "limit": "1"})
     teams = _data(r)
     if not teams:
         return None, "invalid_code"
     team = teams[0]
     # Already a member of this or any team?
-    r2 = sb.get("team_members", params={"user_id": f"eq.{user_id}", "limit": "1"})
+    r2 = sb.get("team_members", params={"user_id": f"eq.{chat_id}", "limit": "1"})
     existing = _data(r2)
     if existing:
         if existing[0]["team_id"] == team["id"]:
@@ -314,7 +333,7 @@ def join_team(
         return None, "already_in_team"
     sb.post(
         "team_members",
-        json={"team_id": team["id"], "user_id": user_id, "role": "member"},
+        json={"team_id": team["id"], "user_id": chat_id, "role": "member"},
         headers={"Prefer": "return=representation"},
     ).raise_for_status()
     return team, None
@@ -326,7 +345,8 @@ def get_team_members(sb: httpx.Client, team_id: str) -> list:
     members = _data(r)
     result = []
     for m in members:
-        ur = sb.get("users", params={"id": f"eq.{m['user_id']}", "select": "name", "limit": "1"})
+        # team_members.user_id is telegram_chat_id (bigint) — look up by that
+        ur = sb.get("users", params={"telegram_chat_id": f"eq.{m['user_id']}", "select": "name", "limit": "1"})
         ud = _data(ur)
         result.append({**m, "user_name": ud[0]["name"] if ud else "Unknown"})
     return result
