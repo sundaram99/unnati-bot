@@ -63,9 +63,10 @@ def get_user(sb: httpx.Client, chat_id: int) -> dict | None:
 
 def _contact_filter(user_id: str, team_id: str | None) -> dict:
     """Return the right ownership filter for contact queries.
-    Team members see all contacts tagged with their team; solo users see only their own."""
+    When in a team, show contacts tagged with team_id OR owned by user_id (backwards compat
+    for contacts created before team membership). Solo users see only their own."""
     if team_id:
-        return {"team_id": f"eq.{team_id}"}
+        return {"or": f"(team_id.eq.{team_id},user_id.eq.{user_id})"}
     return {"user_id": f"eq.{user_id}"}
 
 

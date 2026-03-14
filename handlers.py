@@ -1045,7 +1045,19 @@ async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     sb = _sb()
-    db.create_reminder(sb, update.effective_chat.id, remind_at, message)
+    try:
+        db.create_reminder(sb, update.effective_chat.id, remind_at, message)
+    except Exception as e:
+        logger.error("create_reminder failed: %s", e)
+        await update.message.reply_text(
+            "⚠️ Couldn't save reminder — the *reminders* table may not exist yet.\n\n"
+            "Run this in your Supabase SQL editor:\n"
+            "`CREATE TABLE IF NOT EXISTS reminders (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
+            "chat_id int8 NOT NULL, remind_at timestamptz NOT NULL, message text NOT NULL, "
+            "sent boolean DEFAULT false, created_at timestamptz DEFAULT now());`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
 
     # Format time in IST for the confirmation (portable — no %-d Linux-only flag)
     ist = timezone(timedelta(hours=5, minutes=30))
