@@ -227,7 +227,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
     if args and args[0].startswith("link_"):
         token = args[0][5:]  # strip "link_" prefix
-        if user and db.consume_link_token(sb, token, user["id"]):
+        try:
+            linked = bool(user and db.consume_link_token(sb, token, user["id"]))
+        except Exception as e:
+            logger.error("start link handler error: %s", e)
+            linked = False
+        if linked:
             await update.message.reply_text(
                 "✅ *Web dashboard linked!*\n\n"
                 "Refresh the dashboard — your pipeline is now synced to this account.",

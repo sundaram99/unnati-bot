@@ -371,34 +371,40 @@ def delete_user_contacts(sb: httpx.Client, user_id: str, team_id: str | None = N
 
 def consume_link_token(sb: httpx.Client, token: str, bot_user_id: str) -> bool:
     """Validate a one-time link token and attach supabase_auth_id to the bot user row.
-    Returns True on success, False if token is expired, used, or not found."""
-    r = sb.get(
-        "bot_link_tokens",
-        params={
-            "token": f"eq.{token}",
-            "used": "eq.false",
-            "expires_at": f"gt.{datetime.now(timezone.utc).isoformat()}",
-            "limit": "1",
-        },
-    )
-    rows = _data(r)
-    if not rows:
+    Returns True on success, False if token is expired, used, not found, or any DB error."""
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    try:
+        r = sb.get(
+            "bot_link_tokens",
+            params={
+                "token": f"eq.{token}",
+                "used": "eq.false",
+                "expires_at": f"gt.{datetime.now(timezone.utc).isoformat()}",
+                "limit": "1",
+            },
+        )
+        rows = _data(r)
+        if not rows:
+            return False
+        auth_id = rows[0]["supabase_auth_id"]
+        # Link the web auth UUID to this bot user
+        sb.patch(
+            "users",
+            json={"supabase_auth_id": auth_id},
+            params={"id": f"eq.{bot_user_id}"},
+            headers={"Prefer": "return=representation"},
+        ).raise_for_status()
+        # Mark token used
+        sb.patch(
+            "bot_link_tokens",
+            json={"used": True},
+            params={"token": f"eq.{token}"},
+        ).raise_for_status()
+        return True
+    except Exception as e:
+        _log.error("consume_link_token failed: %s", e)
         return False
-    auth_id = rows[0]["supabase_auth_id"]
-    # Link the web auth UUID to this bot user
-    sb.patch(
-        "users",
-        json={"supabase_auth_id": auth_id},
-        params={"id": f"eq.{bot_user_id}"},
-        headers={"Prefer": "return=representation"},
-    ).raise_for_status()
-    # Mark token used
-    sb.patch(
-        "bot_link_tokens",
-        json={"used": True},
-        params={"token": f"eq.{token}"},
-    ).raise_for_status()
-    return True
 
 
 # ── Reminders ─────────────────────────────────────────────────────────────────
